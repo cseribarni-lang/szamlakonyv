@@ -225,6 +225,7 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
     megjegyzes: ""
   });
   const [feltoltesAlatt, setFeltoltesAlatt] = useState(false);
+  const [aiFeldolgozasAlatt, setAiFeldolgozasAlatt] = useState(false);
   const [mentesAlatt, setMentesAlatt] = useState(false);
   const [fotoElonezet, setFotoElonezet] = useState(meglevoSzamla?.foto_url || null);
   const [hiba, setHiba] = useState("");
@@ -244,6 +245,15 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
     });
   }
 
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(",")[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
   async function handleFotoValasztas(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -256,9 +266,45 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
         contentType: "image/jpeg"
       });
       if (error) throw error;
-      const { data: urlData } = sb.storage.from("szamla-fotok").getPublicUrl(fileName);
       set("foto_url", fileName); // a path-ot mentjük, nem a public url-t, mert privát bucket
       setFotoElonezet(URL.createObjectURL(compressed));
+
+      // AI-alapú felismerés
+      setAiFeldolgozasAlatt(true);
+      try {
+        const base64 = await blobToBase64(compressed);
+        const { data: fnData, error: fnError } = await sb.functions.invoke("szamla-felismeres", {
+          body: { imageBase64: base64, mediaType: "image/jpeg" }
+        });
+        if (fnError) throw fnError;
+        if (fnData?.error) throw new Error(fnData.error);
+        const ai = fnData?.data;
+        if (ai) {
+          setAdat((prev) => ({
+            ...prev,
+            szamla_forma: ai.szamla_forma || prev.szamla_forma,
+            szamlaszam: ai.szamlaszam || prev.szamlaszam,
+            datum: ai.datum || prev.datum,
+            teljesites_datum: ai.teljesites_datum || prev.teljesites_datum,
+            fizetesi_hatarido: ai.fizetesi_hatarido || prev.fizetesi_hatarido,
+            partner_nev: ai.partner_nev || prev.partner_nev,
+            partner_adoszam: ai.partner_adoszam || prev.partner_adoszam,
+            partner_orszag: ai.partner_orszag || prev.partner_orszag,
+            netto: ai.netto ?? prev.netto,
+            afa_kulcs: ai.afa_kulcs ?? prev.afa_kulcs,
+            afa_osszeg: ai.afa_osszeg ?? prev.afa_osszeg,
+            brutto: ai.brutto ?? prev.brutto,
+            penznem: ai.penznem || prev.penznem,
+            afa_kategoria: ai.afa_kategoria || prev.afa_kategoria,
+            ai_felismert_adat: ai,
+            ai_megbizhatosag: ai.megbizhatosag || null
+          }));
+        }
+      } catch (aiErr) {
+        setHiba("AI felismerés nem sikerült (a fotó feltöltve, de kézzel kell kitölteni): " + aiErr.message);
+      } finally {
+        setAiFeldolgozasAlatt(false);
+      }
     } catch (err) {
       setHiba("Fotó feltöltési hiba: " + err.message);
     } finally {
@@ -326,8 +372,14 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
         <div style={{ marginBottom: 16 }}>
           <label style={labelStyle}>Számla fotó</label>
           {fotoElonezet && <img src={fotoElonezet} style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 8 }} />}
-          <input type="file" accept="image/*" capture="environment" onChange={handleFotoValasztas} disabled={feltoltesAlatt} />
+          <input type="file" accept="image/*" capture="environment" onChange={handleFotoValasztas} disabled={feltoltesAlatt || aiFeldolgozasAlatt} />
           {feltoltesAlatt && <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>Feltöltés...</div>}
+          {aiFeldolgozasAlatt && <div style={{ fontSize: 13, color: "#2d6a4f", marginTop: 4 }}>🤖 AI olvassa a számlát...</div>}
+          {adat.ai_megbizhatosag && !aiFeldolgozasAlatt && (
+            <div style={{ fontSize: 13, marginTop: 4, color: adat.ai_megbizhatosag === "magas" ? "#2d6a4f" : "#9c4221" }}>
+              AI megbízhatóság: {adat.ai_megbizhatosag} {adat.ai_megbizhatosag !== "magas" && "— érdemes átnézni az adatokat"}
+            </div>
+          )}
         </div>
 
         <label style={labelStyle}>Típus</label>
