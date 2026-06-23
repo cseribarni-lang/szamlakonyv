@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Számlakönyv</title>
+<link rel="manifest" href="manifest.json" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f5f7; color: #1a1a1a; }
+  #root { min-height: 100vh; }
+  button { cursor: pointer; font-family: inherit; }
+  input, select, textarea { font-family: inherit; font-size: 16px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useCallback } = React;
+
+// ============================================
+// SUPABASE BEÁLLÍTÁS
+// ============================================
+const SUPABASE_URL = "https://cjbpsvgomsdxaewsassl.supabase.co";
+const SUPABASE_KEY = "sb_publishable_SMqM4K1WRf8teQKFfhMbIQ_i-wnyHOu";
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const TABLE = { ev: "ev_szamlak", kft: "kft_szamlak" };
+
+// ============================================
+// SEGÉDFÜGGVÉNYEK
+// ============================================
+function formatHUF(num) {
+  if (num == null) return "";
+  return new Intl.NumberFormat("hu-HU").format(num);
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Kép tömörítése feltöltés előtt (max szélesség 1600px, JPEG 80%)
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 1600;
+        const scale = Math.min(1, maxW / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.8);
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// ============================================
+// BEJELENTKEZÉS
+// ============================================
+function Login({ onLoggedIn }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (error) {
+      setError("Hibás email vagy jelszó.");
+    } else {
+      onLoggedIn();
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", padding: 20 }}>
+      <form onSubmit={handleLogin} style={{ background: "white", borderRadius: 16, padding: 32, width: "100%", maxWidth: 380, boxShadow: "0 2px 12px rgba(0,0,0,0.08)" }}>
+        <h1 style={{ fontSize: 24, marginBottom: 24, textAlign: "center" }}>📋 Számlakönyv</h1>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: "block", marginBottom: 6, fontSize: 14, color: "#555" }}>Email</label>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+            style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #ddd" }} />
+        </div>
+        <div style={{ marginBottom: 20 }}>
+          <label style={{ display: "block", marginBottom: 6, fontSize: 14, color: "#555" }}>Jelszó</label>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+            style={{ width: "100%", padding: 12, borderRadius: 8, border: "1px solid #ddd" }} />
+        </div>
+        {error && <div style={{ color: "#d33", marginBottom: 16, fontSize: 14 }}>{error}</div>}
+        <button type="submit" disabled={loading}
+          style={{ width: "100%", padding: 14, borderRadius: 8, border: "none", background: "#2d6a4f", color: "white", fontSize: 16, fontWeight: 600 }}>
+          {loading ? "Belépés..." : "Belépés"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ============================================
+// FEJLÉC: cégváltó + kijelentkezés
+// ============================================
+function Header({ ceg, setCeg, jogosultsag, onLogout, nev }) {
+  return (
+    <div style={{ background: "white", padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #e5e5e5", flexWrap: "wrap", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <strong style={{ fontSize: 18 }}>📋 Számlakönyv</strong>
+        <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid #ddd" }}>
+          {jogosultsag.hozzaferes_ev && (
+            <button onClick={() => setCeg("ev")}
+              style={{ padding: "6px 16px", border: "none", background: ceg === "ev" ? "#2d6a4f" : "white", color: ceg === "ev" ? "white" : "#333", fontWeight: 600 }}>
+              EV
+            </button>
+          )}
+          {jogosultsag.hozzaferes_kft && (
+            <button onClick={() => setCeg("kft")}
+              style={{ padding: "6px 16px", border: "none", background: ceg === "kft" ? "#2d6a4f" : "white", color: ceg === "kft" ? "white" : "#333", fontWeight: 600 }}>
+              KFT
+            </button>
+          )}
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 14, color: "#555" }}>
+        <span>{nev}{jogosultsag.csak_olvasas ? " (csak olvasás)" : ""}</span>
+        <button onClick={onLogout} style={{ border: "none", background: "none", color: "#888", textDecoration: "underline" }}>Kijelentkezés</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// SZŰRŐSÁV
+// ============================================
+function Szuro({ szuro, setSzuro }) {
+  return (
+    <div style={{ display: "flex", gap: 8, padding: "12px 16px", flexWrap: "wrap", background: "white", borderBottom: "1px solid #eee" }}>
+      <select value={szuro.tipus} onChange={(e) => setSzuro({ ...szuro, tipus: e.target.value })}
+        style={{ padding: 8, borderRadius: 6, border: "1px solid #ddd" }}>
+        <option value="">Minden típus</option>
+        <option value="kiadott">Kiadott</option>
+        <option value="befogadott">Befogadott</option>
+      </select>
+      <select value={szuro.kifizetve} onChange={(e) => setSzuro({ ...szuro, kifizetve: e.target.value })}
+        style={{ padding: 8, borderRadius: 6, border: "1px solid #ddd" }}>
+        <option value="">Bármilyen státusz</option>
+        <option value="nem">Nincs kifizetve</option>
+        <option value="igen">Kifizetve</option>
+      </select>
+      <input type="text" placeholder="Partner keresése..." value={szuro.partner}
+        onChange={(e) => setSzuro({ ...szuro, partner: e.target.value })}
+        style={{ padding: 8, borderRadius: 6, border: "1px solid #ddd", flex: 1, minWidth: 140 }} />
+    </div>
+  );
+}
+
+// ============================================
+// SZÁMLA LISTA SOR
+// ============================================
+function SzamlaSor({ szamla, onClick }) {
+  const szinKategoria = szamla.tipus === "kiadott" ? "#2d6a4f" : "#9c4221";
+  return (
+    <div onClick={onClick} style={{
+      background: "white", borderRadius: 10, padding: 14, marginBottom: 8, cursor: "pointer",
+      borderLeft: `4px solid ${szinKategoria}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 15 }}>{szamla.partner_nev || "(névtelen partner)"}</div>
+        <div style={{ fontSize: 13, color: "#777" }}>
+          {szamla.datum} · {szamla.szamlaszam || "—"} · {szamla.tipus === "kiadott" ? "Kiadott" : "Befogadott"}
+        </div>
+      </div>
+      <div style={{ textAlign: "right" }}>
+        <div style={{ fontWeight: 700 }}>{formatHUF(szamla.brutto)} {szamla.penznem}</div>
+        <div style={{ fontSize: 12, color: szamla.kifizetve ? "#2d6a4f" : "#d33" }}>
+          {szamla.kifizetve ? "✓ Kifizetve" : "Nincs kifizetve"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// SZÁMLA SZERKESZTŐ/HOZZÁADÓ ŰRLAP
+// ============================================
+function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kategoriak }) {
+  const [adat, setAdat] = useState(meglevoSzamla || {
+    tipus: "befogadott",
+    szamla_forma: "reszletes",
+    szamlaszam: "",
+    datum: todayISO(),
+    teljesites_datum: "",
+    fizetesi_hatarido: "",
+    partner_nev: "",
+    partner_adoszam: "",
+    partner_orszag: "HU",
+    belfoldi: true,
+    netto: "",
+    afa_kulcs: "27",
+    afa_osszeg: "",
+    brutto: "",
+    penznem: "HUF",
+    afa_kategoria: "belfoldi",
+    kategoria: "",
+    kifizetve: false,
+    kifizetes_datuma: "",
+    foto_url: "",
+    megjegyzes: ""
+  });
+  const [feltoltesAlatt, setFeltoltesAlatt] = useState(false);
+  const [mentesAlatt, setMentesAlatt] = useState(false);
+  const [fotoElonezet, setFotoElonezet] = useState(meglevoSzamla?.foto_url || null);
+  const [hiba, setHiba] = useState("");
+
+  function set(field, value) {
+    setAdat((prev) => {
+      const next = { ...prev, [field]: value };
+      // automatikus bruttó/áfa számítás
+      if (field === "netto" || field === "afa_kulcs") {
+        const netto = parseFloat(field === "netto" ? value : prev.netto) || 0;
+        const kulcs = parseFloat(field === "afa_kulcs" ? value : prev.afa_kulcs) || 0;
+        const afa = Math.round(netto * (kulcs / 100));
+        next.afa_osszeg = afa;
+        next.brutto = netto + afa;
+      }
+      return next;
+    });
+  }
+
+  async function handleFotoValasztas(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFeltoltesAlatt(true);
+    setHiba("");
+    try {
+      const compressed = await compressImage(file);
+      const fileName = `${ceg}/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+      const { data, error } = await supabase.storage.from("szamla-fotok").upload(fileName, compressed, {
+        contentType: "image/jpeg"
+      });
+      if (error) throw error;
+      const { data: urlData } = supabase.storage.from("szamla-fotok").getPublicUrl(fileName);
+      set("foto_url", fileName); // a path-ot mentjük, nem a public url-t, mert privát bucket
+      setFotoElonezet(URL.createObjectURL(compressed));
+    } catch (err) {
+      setHiba("Fotó feltöltési hiba: " + err.message);
+    } finally {
+      setFeltoltesAlatt(false);
+    }
+  }
+
+  async function handleMentes() {
+    setMentesAlatt(true);
+    setHiba("");
+    try {
+      const mentendo = {
+        ...adat,
+        netto: adat.netto ? parseFloat(adat.netto) : null,
+        afa_kulcs: adat.afa_kulcs ? parseFloat(adat.afa_kulcs) : null,
+        afa_osszeg: adat.afa_osszeg ? parseFloat(adat.afa_osszeg) : null,
+        brutto: adat.brutto ? parseFloat(adat.brutto) : null,
+        teljesites_datum: adat.teljesites_datum || null,
+        fizetesi_hatarido: adat.fizetesi_hatarido || null,
+        kifizetes_datuma: adat.kifizetes_datuma || null,
+        modositva: new Date().toISOString()
+      };
+      if (!meglevoSzamla) {
+        mentendo.rogzitette = felhasznaloId;
+      }
+      let result;
+      if (meglevoSzamla?.id) {
+        result = await supabase.from(TABLE[ceg]).update(mentendo).eq("id", meglevoSzamla.id);
+      } else {
+        result = await supabase.from(TABLE[ceg]).insert(mentendo);
+      }
+      if (result.error) throw result.error;
+      onSaved();
+    } catch (err) {
+      setHiba("Mentési hiba: " + err.message);
+    } finally {
+      setMentesAlatt(false);
+    }
+  }
+
+  async function handleTorles() {
+    if (!confirm("Biztosan törlöd ezt a számlát?")) return;
+    setMentesAlatt(true);
+    const { error } = await supabase.from(TABLE[ceg]).delete().eq("id", meglevoSzamla.id);
+    if (error) {
+      setHiba("Törlési hiba: " + error.message);
+      setMentesAlatt(false);
+    } else {
+      onSaved();
+    }
+  }
+
+  const inputStyle = { width: "100%", padding: 10, borderRadius: 8, border: "1px solid #ddd", marginBottom: 12 };
+  const labelStyle = { display: "block", marginBottom: 4, fontSize: 13, color: "#666", fontWeight: 600 };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-start", justifyContent: "center", overflowY: "auto", zIndex: 100, padding: "20px 0" }}>
+      <div style={{ background: "white", borderRadius: 16, padding: 24, width: "100%", maxWidth: 480, margin: "0 16px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h2 style={{ fontSize: 18 }}>{meglevoSzamla ? "Számla szerkesztése" : "Új számla"}</h2>
+          <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, color: "#888" }}>×</button>
+        </div>
+
+        {/* Fotó feltöltés */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={labelStyle}>Számla fotó</label>
+          {fotoElonezet && <img src={fotoElonezet} style={{ maxWidth: "100%", borderRadius: 8, marginBottom: 8 }} />}
+          <input type="file" accept="image/*" capture="environment" onChange={handleFotoValasztas} disabled={feltoltesAlatt} />
+          {feltoltesAlatt && <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>Feltöltés...</div>}
+        </div>
+
+        <label style={labelStyle}>Típus</label>
+        <select value={adat.tipus} onChange={(e) => set("tipus", e.target.value)} style={inputStyle}>
+          <option value="befogadott">Befogadott (vásárlás)</option>
+          <option value="kiadott">Kiadott</option>
+        </select>
+
+        <label style={labelStyle}>Számla forma</label>
+        <select value={adat.szamla_forma} onChange={(e) => set("szamla_forma", e.target.value)} style={inputStyle}>
+          <option value="reszletes">Részletes (ÁFA-bontásos)</option>
+          <option value="egyszerusitett">Egyszerűsített (blokk-szerű)</option>
+        </select>
+
+        <label style={labelStyle}>Számlaszám</label>
+        <input type="text" value={adat.szamlaszam} onChange={(e) => set("szamlaszam", e.target.value)} style={inputStyle} />
+
+        <label style={labelStyle}>Dátum</label>
+        <input type="date" value={adat.datum} onChange={(e) => set("datum", e.target.value)} style={inputStyle} />
+
+        <label style={labelStyle}>Fizetési határidő</label>
+        <input type="date" value={adat.fizetesi_hatarido} onChange={(e) => set("fizetesi_hatarido", e.target.value)} style={inputStyle} />
+
+        <label style={labelStyle}>Partner neve</label>
+        <input type="text" value={adat.partner_nev} onChange={(e) => set("partner_nev", e.target.value)} style={inputStyle} />
+
+        <label style={labelStyle}>Partner adószáma</label>
+        <input type="text" value={adat.partner_adoszam} onChange={(e) => set("partner_adoszam", e.target.value)} style={inputStyle} />
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>Ország</label>
+            <input type="text" value={adat.partner_orszag} onChange={(e) => set("partner_orszag", e.target.value)} style={inputStyle} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>ÁFA kategória</label>
+            <select value={adat.afa_kategoria} onChange={(e) => set("afa_kategoria", e.target.value)} style={inputStyle}>
+              <option value="belfoldi">Belföldi</option>
+              <option value="eu_forditott">EU fordított</option>
+              <option value="eu_kivuli">EU-n kívüli</option>
+              <option value="afa_mentes">ÁFA mentes</option>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>Nettó</label>
+            <input type="number" value={adat.netto} onChange={(e) => set("netto", e.target.value)} style={inputStyle} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>ÁFA %</label>
+            <input type="number" value={adat.afa_kulcs} onChange={(e) => set("afa_kulcs", e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>ÁFA összeg</label>
+            <input type="number" value={adat.afa_osszeg} onChange={(e) => set("afa_osszeg", e.target.value)} style={inputStyle} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>Bruttó</label>
+            <input type="number" value={adat.brutto} onChange={(e) => set("brutto", e.target.value)} style={inputStyle} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>Pénznem</label>
+            <select value={adat.penznem} onChange={(e) => set("penznem", e.target.value)} style={inputStyle}>
+              <option value="HUF">HUF</option>
+              <option value="EUR">EUR</option>
+              <option value="USD">USD</option>
+            </select>
+          </div>
+        </div>
+
+        <label style={labelStyle}>Kategória</label>
+        <input type="text" list="kategoria-lista" value={adat.kategoria} onChange={(e) => set("kategoria", e.target.value)} style={inputStyle} placeholder="pl. üzemanyag, anyagköltség..." />
+        <datalist id="kategoria-lista">
+          {kategoriak.map((k) => <option key={k.id} value={k.nev} />)}
+        </datalist>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <input type="checkbox" checked={adat.kifizetve} onChange={(e) => set("kifizetve", e.target.checked)} id="kifizetve" />
+          <label htmlFor="kifizetve" style={{ fontSize: 14 }}>Kifizetve</label>
+        </div>
+
+        {adat.kifizetve && (
+          <>
+            <label style={labelStyle}>Kifizetés dátuma</label>
+            <input type="date" value={adat.kifizetes_datuma} onChange={(e) => set("kifizetes_datuma", e.target.value)} style={inputStyle} />
+          </>
+        )}
+
+        <label style={labelStyle}>Megjegyzés</label>
+        <textarea value={adat.megjegyzes} onChange={(e) => set("megjegyzes", e.target.value)} style={{ ...inputStyle, minHeight: 60 }} />
+
+        {hiba && <div style={{ color: "#d33", marginBottom: 12, fontSize: 14 }}>{hiba}</div>}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={handleMentes} disabled={mentesAlatt || feltoltesAlatt}
+            style={{ flex: 1, padding: 14, borderRadius: 8, border: "none", background: "#2d6a4f", color: "white", fontWeight: 600 }}>
+            {mentesAlatt ? "Mentés..." : "Mentés"}
+          </button>
+          {meglevoSzamla && (
+            <button onClick={handleTorles} disabled={mentesAlatt}
+              style={{ padding: "14px 18px", borderRadius: 8, border: "1px solid #d33", background: "white", color: "#d33", fontWeight: 600 }}>
+              Törlés
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================
+// FŐ ALKALMAZÁS (bejelentkezve)
+// ============================================
+function App({ session, felhasznalo, onLogout }) {
+  const [ceg, setCeg] = useState(felhasznalo.hozzaferes_ev ? "ev" : "kft");
+  const [szamlak, setSzamlak] = useState([]);
+  const [kategoriak, setKategoriak] = useState([]);
+  const [betoltes, setBetoltes] = useState(true);
+  const [szuro, setSzuro] = useState({ tipus: "", kifizetve: "", partner: "" });
+  const [szerkesztett, setSzerkesztett] = useState(null);
+  const [ujSzamla, setUjSzamla] = useState(false);
+
+  const betoltSzamlak = useCallback(async () => {
+    setBetoltes(true);
+    let query = supabase.from(TABLE[ceg]).select("*").order("datum", { ascending: false });
+    const { data, error } = await query;
+    if (!error) setSzamlak(data || []);
+    setBetoltes(false);
+  }, [ceg]);
+
+  useEffect(() => { betoltSzamlak(); }, [betoltSzamlak]);
+
+  useEffect(() => {
+    supabase.from("kategoriak").select("*").eq("ceg", ceg).order("sorrend").then(({ data }) => {
+      setKategoriak(data || []);
+    });
+  }, [ceg]);
+
+  const szurtSzamlak = szamlak.filter((s) => {
+    if (szuro.tipus && s.tipus !== szuro.tipus) return false;
+    if (szuro.kifizetve === "igen" && !s.kifizetve) return false;
+    if (szuro.kifizetve === "nem" && s.kifizetve) return false;
+    if (szuro.partner && !(s.partner_nev || "").toLowerCase().includes(szuro.partner.toLowerCase())) return false;
+    return true;
+  });
+
+  const osszesNetto = szurtSzamlak.reduce((sum, s) => sum + (s.netto || 0), 0);
+  const osszesBrutto = szurtSzamlak.reduce((sum, s) => sum + (s.brutto || 0), 0);
+
+  function exportExcel() {
+    const fejsorok = ["Típus", "Forma", "Számlaszám", "Dátum", "Fizetési határidő", "Partner", "Adószám", "Ország", "Nettó", "ÁFA%", "ÁFA összeg", "Bruttó", "Pénznem", "ÁFA kategória", "Kategória", "Kifizetve", "Kifizetés dátuma", "Megjegyzés"];
+    const sorok = szurtSzamlak.map((s) => [
+      s.tipus, s.szamla_forma, s.szamlaszam, s.datum, s.fizetesi_hatarido, s.partner_nev, s.partner_adoszam,
+      s.partner_orszag, s.netto, s.afa_kulcs, s.afa_osszeg, s.brutto, s.penznem, s.afa_kategoria, s.kategoria,
+      s.kifizetve ? "Igen" : "Nem", s.kifizetes_datuma, s.megjegyzes
+    ]);
+    const csv = [fejsorok, ...sorok].map((row) =>
+      row.map((cell) => `"${(cell ?? "").toString().replace(/"/g, '""')}"`).join(";")
+    ).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `szamlak_${ceg}_${todayISO()}.csv`;
+    a.click();
+  }
+
+  return (
+    <div>
+      <Header ceg={ceg} setCeg={setCeg} jogosultsag={felhasznalo} onLogout={onLogout} nev={felhasznalo.nev} />
+      <Szuro szuro={szuro} setSzuro={setSzuro} />
+
+      <div style={{ padding: 16, maxWidth: 700, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontSize: 14, color: "#555" }}>
+            {szurtSzamlak.length} számla · Nettó: {formatHUF(osszesNetto)} · Bruttó: {formatHUF(osszesBrutto)}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={exportExcel} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid #ddd", background: "white" }}>
+              Excel export
+            </button>
+            {!felhasznalo.csak_olvasas && (
+              <button onClick={() => setUjSzamla(true)} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#2d6a4f", color: "white", fontWeight: 600 }}>
+                + Új számla
+              </button>
+            )}
+          </div>
+        </div>
+
+        {betoltes ? (
+          <div style={{ textAlign: "center", padding: 40, color: "#888" }}>Betöltés...</div>
+        ) : szurtSzamlak.length === 0 ? (
+          <div style={{ textAlign: "center", padding: 40, color: "#888" }}>Nincs még számla rögzítve.</div>
+        ) : (
+          szurtSzamlak.map((s) => (
+            <SzamlaSor key={s.id} szamla={s} onClick={() => setSzerkesztett(s)} />
+          ))
+        )}
+      </div>
+
+      {(ujSzamla || szerkesztett) && (
+        <SzamlaForm
+          ceg={ceg}
+          felhasznaloId={felhasznalo.id}
+          meglevoSzamla={szerkesztett}
+          kategoriak={kategoriak}
+          onClose={() => { setUjSzamla(false); setSzerkesztett(null); }}
+          onSaved={() => { setUjSzamla(false); setSzerkesztett(null); betoltSzamlak(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================
+// GYÖKÉR KOMPONENS: session + felhasználó betöltés
+// ============================================
+function Root() {
+  const [session, setSession] = useState(null);
+  const [felhasznalo, setFelhasznalo] = useState(null);
+  const [betoltes, setBetoltes] = useState(true);
+
+  async function betoltFelhasznalo(sess) {
+    if (!sess) {
+      setFelhasznalo(null);
+      setBetoltes(false);
+      return;
+    }
+    const { data, error } = await supabase.from("felhasznalok").select("*").eq("auth_id", sess.user.id).single();
+    if (error || !data) {
+      setFelhasznalo(null);
+    } else {
+      setFelhasznalo(data);
+    }
+    setBetoltes(false);
+  }
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      betoltFelhasznalo(session);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      betoltFelhasznalo(session);
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  if (betoltes) {
+    return <div style={{ textAlign: "center", padding: 60, color: "#888" }}>Betöltés...</div>;
+  }
+
+  if (!session) {
+    return <Login onLoggedIn={() => {}} />;
+  }
+
+  if (!felhasznalo) {
+    return (
+      <div style={{ textAlign: "center", padding: 60 }}>
+        <p style={{ marginBottom: 16 }}>Be vagy lépve, de nincs hozzáférésed beállítva ehhez az alkalmazáshoz.</p>
+        <button onClick={() => supabase.auth.signOut()} style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #ddd" }}>
+          Kijelentkezés
+        </button>
+      </div>
+    );
+  }
+
+  return <App session={session} felhasznalo={felhasznalo} onLogout={() => supabase.auth.signOut()} />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
+</script>
+</body>
+</html>
