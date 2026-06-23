@@ -229,6 +229,48 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
   const [mentesAlatt, setMentesAlatt] = useState(false);
   const [fotoElonezet, setFotoElonezet] = useState(meglevoSzamla?.foto_url || null);
   const [hiba, setHiba] = useState("");
+  const [tetelek, setTetelek] = useState([]);
+
+  const TETEL_TABLE = { ev: "ev_szamla_tetelek", kft: "kft_szamla_tetelek" };
+
+  useEffect(() => {
+    if (meglevoSzamla?.id) {
+      sb.from(TETEL_TABLE[ceg]).select("*").eq("szamla_id", meglevoSzamla.id).order("sorrend").then(({ data }) => {
+        setTetelek(data || []);
+      });
+    }
+  }, [meglevoSzamla?.id, ceg]);
+
+  function tetelHozzaadas() {
+    setTetelek((prev) => [...prev, {
+      _kulcs: Math.random().toString(36).slice(2),
+      megnevezes: "", mennyiseg: "", mertekegyseg: "db", egysegar: "", netto: "", afa_kulcs: "27", afa_osszeg: "", brutto: ""
+    }]);
+  }
+
+  function tetelModositas(idx, field, value) {
+    setTetelek((prev) => prev.map((t, i) => {
+      if (i !== idx) return t;
+      const next = { ...t, [field]: value };
+      if (field === "mennyiseg" || field === "egysegar") {
+        const mennyiseg = parseFloat(field === "mennyiseg" ? value : t.mennyiseg) || 0;
+        const egysegar = parseFloat(field === "egysegar" ? value : t.egysegar) || 0;
+        next.netto = mennyiseg * egysegar;
+      }
+      if (field === "netto" || field === "afa_kulcs" || field === "mennyiseg" || field === "egysegar") {
+        const netto = parseFloat(next.netto) || 0;
+        const kulcs = parseFloat(field === "afa_kulcs" ? value : t.afa_kulcs) || 0;
+        const afa = Math.round(netto * (kulcs / 100));
+        next.afa_osszeg = afa;
+        next.brutto = netto + afa;
+      }
+      return next;
+    }));
+  }
+
+  function tetelTorles(idx) {
+    setTetelek((prev) => prev.filter((_, i) => i !== idx));
+  }
 
   function set(field, value) {
     setAdat((prev) => {
@@ -299,6 +341,19 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
             ai_felismert_adat: ai,
             ai_megbizhatosag: ai.megbizhatosag || null
           }));
+          if (Array.isArray(ai.tetelek) && ai.tetelek.length > 0) {
+            setTetelek(ai.tetelek.map((t) => ({
+              _kulcs: Math.random().toString(36).slice(2),
+              megnevezes: t.megnevezes || "",
+              mennyiseg: t.mennyiseg ?? "",
+              mertekegyseg: t.mertekegyseg || "db",
+              egysegar: t.egysegar ?? "",
+              netto: t.netto ?? "",
+              afa_kulcs: t.afa_kulcs ?? "27",
+              afa_osszeg: t.afa_osszeg ?? "",
+              brutto: t.brutto ?? ""
+            })));
+          }
         }
       } catch (aiErr) {
         setHiba("AI felismerés nem sikerült (a fotó feltöltve, de kézzel kell kitölteni): " + aiErr.message);
@@ -331,12 +386,38 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
         mentendo.rogzitette = felhasznaloId;
       }
       let result;
-      if (meglevoSzamla?.id) {
-        result = await sb.from(TABLE[ceg]).update(mentendo).eq("id", meglevoSzamla.id);
+      let szamlaId = meglevoSzamla?.id;
+      if (szamlaId) {
+        result = await sb.from(TABLE[ceg]).update(mentendo).eq("id", szamlaId);
       } else {
-        result = await sb.from(TABLE[ceg]).insert(mentendo);
+        result = await sb.from(TABLE[ceg]).insert(mentendo).select().single();
+        szamlaId = result.data?.id;
       }
       if (result.error) throw result.error;
+
+      // Tételsorok mentése: a régieket töröljük, az aktuálisakat újra beszúrjuk (egyszerű, megbízható módszer)
+      if (szamlaId) {
+        await sb.from(TETEL_TABLE[ceg]).delete().eq("szamla_id", szamlaId);
+        const tetelSorok = tetelek
+          .filter((t) => t.megnevezes && t.megnevezes.trim() !== "")
+          .map((t, idx) => ({
+            szamla_id: szamlaId,
+            megnevezes: t.megnevezes,
+            mennyiseg: t.mennyiseg ? parseFloat(t.mennyiseg) : null,
+            mertekegyseg: t.mertekegyseg || null,
+            egysegar: t.egysegar ? parseFloat(t.egysegar) : null,
+            netto: t.netto ? parseFloat(t.netto) : null,
+            afa_kulcs: t.afa_kulcs ? parseFloat(t.afa_kulcs) : null,
+            afa_osszeg: t.afa_osszeg ? parseFloat(t.afa_osszeg) : null,
+            brutto: t.brutto ? parseFloat(t.brutto) : null,
+            sorrend: idx
+          }));
+        if (tetelSorok.length > 0) {
+          const tetelResult = await sb.from(TETEL_TABLE[ceg]).insert(tetelSorok);
+          if (tetelResult.error) throw tetelResult.error;
+        }
+      }
+
       onSaved();
     } catch (err) {
       setHiba("Mentési hiba: " + err.message);
@@ -472,6 +553,50 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
             <input type="date" value={adat.kifizetes_datuma} onChange={(e) => set("kifizetes_datuma", e.target.value)} style={inputStyle} />
           </>
         )}
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <label style={labelStyle}>Tételek</label>
+            <button onClick={tetelHozzaadas} type="button" style={{ fontSize: 13, padding: "4px 10px", borderRadius: 6, border: "1px solid #2d6a4f", background: "white", color: "#2d6a4f" }}>
+              + Tétel
+            </button>
+          </div>
+          {tetelek.length === 0 && (
+            <div style={{ fontSize: 13, color: "#999", marginBottom: 8 }}>Nincs tétel rögzítve (a fotó feltöltésekor az AI automatikusan kitöltheti).</div>
+          )}
+          {tetelek.map((t, idx) => (
+            <div key={t._kulcs || t.id || idx} style={{ border: "1px solid #eee", borderRadius: 8, padding: 10, marginBottom: 8, background: "#fafafa" }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                <input type="text" placeholder="Megnevezés" value={t.megnevezes}
+                  onChange={(e) => tetelModositas(idx, "megnevezes", e.target.value)}
+                  style={{ flex: 1, padding: 8, borderRadius: 6, border: "1px solid #ddd" }} />
+                <button onClick={() => tetelTorles(idx)} type="button" style={{ border: "none", background: "none", color: "#d33", fontSize: 18, padding: "0 6px" }}>×</button>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input type="number" placeholder="Menny." value={t.mennyiseg}
+                  onChange={(e) => tetelModositas(idx, "mennyiseg", e.target.value)}
+                  style={{ width: 70, padding: 8, borderRadius: 6, border: "1px solid #ddd" }} />
+                <input type="text" placeholder="me." value={t.mertekegyseg}
+                  onChange={(e) => tetelModositas(idx, "mertekegyseg", e.target.value)}
+                  style={{ width: 50, padding: 8, borderRadius: 6, border: "1px solid #ddd" }} />
+                <input type="number" placeholder="Egységár" value={t.egysegar}
+                  onChange={(e) => tetelModositas(idx, "egysegar", e.target.value)}
+                  style={{ flex: 1, padding: 8, borderRadius: 6, border: "1px solid #ddd" }} />
+                <input type="number" placeholder="Nettó" value={t.netto}
+                  onChange={(e) => tetelModositas(idx, "netto", e.target.value)}
+                  style={{ flex: 1, padding: 8, borderRadius: 6, border: "1px solid #ddd" }} />
+                <input type="number" placeholder="Bruttó" value={t.brutto}
+                  onChange={(e) => tetelModositas(idx, "brutto", e.target.value)}
+                  style={{ flex: 1, padding: 8, borderRadius: 6, border: "1px solid #ddd" }} />
+              </div>
+            </div>
+          ))}
+          {tetelek.length > 0 && (
+            <div style={{ fontSize: 13, color: "#666", textAlign: "right" }}>
+              Tételek összesen (nettó): {formatHUF(tetelek.reduce((s, t) => s + (parseFloat(t.netto) || 0), 0))}
+            </div>
+          )}
+        </div>
 
         <label style={labelStyle}>Megjegyzés</label>
         <textarea value={adat.megjegyzes} onChange={(e) => set("megjegyzes", e.target.value)} style={{ ...inputStyle, minHeight: 60 }} />
