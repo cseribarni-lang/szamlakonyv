@@ -29,7 +29,7 @@ const { useState, useEffect, useCallback } = React;
 // ============================================
 const SUPABASE_URL = "https://cjbpsvgomsdxaewsassl.supabase.co";
 const SUPABASE_KEY = "sb_publishable_SMqM4K1WRf8teQKFfhMbIQ_i-wnyHOu";
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const TABLE = { ev: "ev_szamlak", kft: "kft_szamlak" };
 
@@ -82,7 +82,7 @@ function Login({ onLoggedIn }) {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await sb.auth.signInWithPassword({ email, password });
     setLoading(false);
     if (error) {
       setError("Hibás email vagy jelszó.");
@@ -252,11 +252,11 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
     try {
       const compressed = await compressImage(file);
       const fileName = `${ceg}/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
-      const { data, error } = await supabase.storage.from("szamla-fotok").upload(fileName, compressed, {
+      const { data, error } = await sb.storage.from("szamla-fotok").upload(fileName, compressed, {
         contentType: "image/jpeg"
       });
       if (error) throw error;
-      const { data: urlData } = supabase.storage.from("szamla-fotok").getPublicUrl(fileName);
+      const { data: urlData } = sb.storage.from("szamla-fotok").getPublicUrl(fileName);
       set("foto_url", fileName); // a path-ot mentjük, nem a public url-t, mert privát bucket
       setFotoElonezet(URL.createObjectURL(compressed));
     } catch (err) {
@@ -286,9 +286,9 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
       }
       let result;
       if (meglevoSzamla?.id) {
-        result = await supabase.from(TABLE[ceg]).update(mentendo).eq("id", meglevoSzamla.id);
+        result = await sb.from(TABLE[ceg]).update(mentendo).eq("id", meglevoSzamla.id);
       } else {
-        result = await supabase.from(TABLE[ceg]).insert(mentendo);
+        result = await sb.from(TABLE[ceg]).insert(mentendo);
       }
       if (result.error) throw result.error;
       onSaved();
@@ -302,7 +302,7 @@ function SzamlaForm({ ceg, felhasznaloId, meglevoSzamla, onClose, onSaved, kateg
   async function handleTorles() {
     if (!confirm("Biztosan törlöd ezt a számlát?")) return;
     setMentesAlatt(true);
-    const { error } = await supabase.from(TABLE[ceg]).delete().eq("id", meglevoSzamla.id);
+    const { error } = await sb.from(TABLE[ceg]).delete().eq("id", meglevoSzamla.id);
     if (error) {
       setHiba("Törlési hiba: " + error.message);
       setMentesAlatt(false);
@@ -457,7 +457,7 @@ function App({ session, felhasznalo, onLogout }) {
 
   const betoltSzamlak = useCallback(async () => {
     setBetoltes(true);
-    let query = supabase.from(TABLE[ceg]).select("*").order("datum", { ascending: false });
+    let query = sb.from(TABLE[ceg]).select("*").order("datum", { ascending: false });
     const { data, error } = await query;
     if (!error) setSzamlak(data || []);
     setBetoltes(false);
@@ -466,7 +466,7 @@ function App({ session, felhasznalo, onLogout }) {
   useEffect(() => { betoltSzamlak(); }, [betoltSzamlak]);
 
   useEffect(() => {
-    supabase.from("kategoriak").select("*").eq("ceg", ceg).order("sorrend").then(({ data }) => {
+    sb.from("kategoriak").select("*").eq("ceg", ceg).order("sorrend").then(({ data }) => {
       setKategoriak(data || []);
     });
   }, [ceg]);
@@ -561,7 +561,7 @@ function Root() {
       setBetoltes(false);
       return;
     }
-    const { data, error } = await supabase.from("felhasznalok").select("*").eq("auth_id", sess.user.id).single();
+    const { data, error } = await sb.from("felhasznalok").select("*").eq("auth_id", sess.user.id).single();
     if (error || !data) {
       setFelhasznalo(null);
     } else {
@@ -571,11 +571,11 @@ function Root() {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    sb.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       betoltFelhasznalo(session);
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: listener } = sb.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       betoltFelhasznalo(session);
     });
@@ -594,14 +594,14 @@ function Root() {
     return (
       <div style={{ textAlign: "center", padding: 60 }}>
         <p style={{ marginBottom: 16 }}>Be vagy lépve, de nincs hozzáférésed beállítva ehhez az alkalmazáshoz.</p>
-        <button onClick={() => supabase.auth.signOut()} style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #ddd" }}>
+        <button onClick={() => sb.auth.signOut()} style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #ddd" }}>
           Kijelentkezés
         </button>
       </div>
     );
   }
 
-  return <App session={session} felhasznalo={felhasznalo} onLogout={() => supabase.auth.signOut()} />;
+  return <App session={session} felhasznalo={felhasznalo} onLogout={() => sb.auth.signOut()} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
